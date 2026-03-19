@@ -23,7 +23,7 @@ admin.initializeApp({
 const db = admin.database();
 
 // =============================
-// ✅ PAYMENT API
+// ✅ PAYMENT API (lookup by walletId)
 // =============================
 app.post("/pay", async (req, res) => {
   try {
@@ -55,20 +55,21 @@ app.post("/pay", async (req, res) => {
     }
 
     // =============================
-    // ✅ FETCH USER WALLET
+    // ✅ FETCH USER WALLET BY walletId
     // =============================
-    const userRef = db.ref(`wallets/${uid}`);
-    const userSnap = await userRef.get();
+    const walletsRef = db.ref("wallets");
+    const walletSnap = await walletsRef.orderByChild("walletId").equalTo(walletId).get();
 
-    if (!userSnap.exists()) {
+    if (!walletSnap.exists()) {
       throw new Error("Wallet not found");
     }
 
-    const userData = userSnap.val();
-
-    if (userData.walletId !== walletId) {
-      throw new Error("Invalid wallet ID");
-    }
+    // There should only be one wallet with this walletId
+    let userData, userKey;
+    walletSnap.forEach((snap) => {
+      userData = snap.val();
+      userKey = snap.key;
+    });
 
     if (!bcrypt.compareSync(mpin, userData.mpinHash)) {
       throw new Error("Invalid MPIN");
@@ -77,6 +78,8 @@ app.post("/pay", async (req, res) => {
     if (userData.balance < payAmount) {
       throw new Error("Insufficient balance");
     }
+
+    const userRef = db.ref(`wallets/${userKey}`);
 
     // =============================
     // ✅ CHECK MERCHANT
@@ -93,11 +96,7 @@ app.post("/pay", async (req, res) => {
     // =============================
     await userRef.transaction((data) => {
       if (!data) return data;
-
-      if (data.balance < payAmount) {
-        return; // abort
-      }
-
+      if (data.balance < payAmount) return; // abort
       data.balance -= payAmount;
       return data;
     });
@@ -108,7 +107,6 @@ app.post("/pay", async (req, res) => {
     try {
       await merchantRef.transaction((data) => {
         if (!data) return { balance: payAmount };
-
         data.balance = (data.balance || 0) + payAmount;
         return data;
       });
@@ -131,11 +129,11 @@ app.post("/pay", async (req, res) => {
       amount: payAmount,
       status: "SUCCESS",
       merchantId,
-      userId: uid,
+      userId: userKey, // wallet key in DB
       createdAt: Date.now(),
     };
 
-    await db.ref(`transactions/users/${uid}/${txnId}`).set(txData);
+    await db.ref(`transactions/users/${userKey}/${txnId}`).set(txData);
     await db.ref(`transactions/merchants/${merchantId}/${txnId}`).set(txData);
     await globalTxRef.set(txData);
 
@@ -147,13 +145,12 @@ app.post("/pay", async (req, res) => {
       transactionId: txnId,
     });
   } catch (err) {
-    console.error("PAY ERROR full:", err); // ✅ full error object
-    console.error(err.stack); // ✅ full stack trace
+    console.error("PAY ERROR full:", err);
+    console.error(err.stack);
 
-    // 🔥 Log failure
     await db.ref(`transactions_failed`).push({
       error: err.message,
-      stack: err.stack, // store stack trace in Firebase
+      stack: err.stack,
       body: req.body,
       timestamp: Date.now(),
     });
@@ -161,7 +158,7 @@ app.post("/pay", async (req, res) => {
     res.status(500).json({
       status: "FAILURE",
       error: err.message,
-      stack: err.stack, // optionally send stack in response (dev only!)
+      stack: err.stack,
     });
   }
 });
