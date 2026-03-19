@@ -165,52 +165,6 @@ app.post("/pay", async (req, res) => {
 
 
 // =============================
-// ✅ CALLBACK API
-// =============================
-app.post("/payment-callback", async (req, res) => {
-  try {
-    const { uid, amount, status, merchantId, transactionId, secret } = req.body;
-
-    if (secret !== process.env.PAYMENT_CALLBACK_SECRET) {
-      return res.status(403).json({ error: "Unauthorized" });
-    }
-
-    if (!transactionId) {
-      return res.status(400).json({ error: "Missing transactionId" });
-    }
-
-    const txRef = db.ref(`transactions_global/${transactionId}`);
-    const snap = await txRef.get();
-
-    if (snap.exists()) {
-      return res.sendStatus(200); // already processed
-    }
-
-    const txData = {
-      id: transactionId,
-      amount,
-      status,
-      merchantId,
-      userId: uid,
-      callbackAt: Date.now(),
-    };
-
-    await db.ref(`transactions/users/${uid}/${transactionId}`).set(txData);
-    await db.ref(`transactions/merchants/${merchantId}/${transactionId}`).set(txData);
-    await txRef.set(txData);
-
-    console.log("Callback stored:", transactionId);
-
-    res.sendStatus(200);
-
-  } catch (err) {
-    console.error("CALLBACK ERROR:", err);
-    res.status(500).send("Server error");
-  }
-});
-
-
-// =============================
 // ✅ START SERVER
 // =============================
 app.listen(PORT, () => {
