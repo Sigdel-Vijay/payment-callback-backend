@@ -3,7 +3,6 @@ import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import admin from "firebase-admin";
 import bcrypt from "bcryptjs";
-import { v4 as uuidv4 } from "uuid";
 
 dotenv.config();
 
@@ -27,12 +26,12 @@ const db = admin.database();
 // =============================
 app.post("/pay", async (req, res) => {
   try {
-    const { idToken, walletId, mpin, amount, merchantId } = req.body;
+    const { idToken, walletId, mpin, amount, merchantId, clientTxnId } = req.body;
 
-    if (!idToken || !walletId || !mpin || !amount || !merchantId) {
+    if (!idToken || !walletId || !mpin || !amount || !merchantId || !clientTxnId) {
       return res
         .status(400)
-        .json({ status: "FAILURE", error: "Missing fields" });
+        .json({ status: "FAILURE", error: "Missing fields (clientTxnId required)" });
     }
 
     // ✅ Verify Firebase user
@@ -44,14 +43,13 @@ app.post("/pay", async (req, res) => {
       throw new Error("Invalid amount");
     }
 
-    const txnId = uuidv4();
-
-    // 🔥 Idempotency check
-    const globalTxRef = db.ref(`transactions_global/${txnId}`);
+    // 🔥 Idempotency check using clientTxnId
+    const globalTxRef = db.ref(`transactions_global/${clientTxnId}`);
     const existingTx = await globalTxRef.get();
 
     if (existingTx.exists()) {
-      return res.json({ status: "SUCCESS", transactionId: txnId });
+      // If already exists, return success (no double charge)
+      return res.json({ status: "SUCCESS", transactionId: clientTxnId });
     }
 
     // =============================
@@ -64,7 +62,6 @@ app.post("/pay", async (req, res) => {
       throw new Error("Wallet not found");
     }
 
-    // There should only be one wallet with this walletId
     let userData, userKey;
     walletSnap.forEach((snap) => {
       userData = snap.val();
@@ -125,16 +122,16 @@ app.post("/pay", async (req, res) => {
     // ✅ SAVE TRANSACTIONS
     // =============================
     const txData = {
-      id: txnId,
+      id: clientTxnId,
       amount: payAmount,
       status: "SUCCESS",
       merchantId,
-      userId: userKey, // wallet key in DB
+      userId: userKey,
       createdAt: Date.now(),
     };
 
-    await db.ref(`transactions/users/${userKey}/${txnId}`).set(txData);
-    await db.ref(`transactions/merchants/${merchantId}/${txnId}`).set(txData);
+    await db.ref(`transactions/users/${userKey}/${clientTxnId}`).set(txData);
+    await db.ref(`transactions/merchants/${merchantId}/${clientTxnId}`).set(txData);
     await globalTxRef.set(txData);
 
     // =============================
@@ -142,7 +139,7 @@ app.post("/pay", async (req, res) => {
     // =============================
     res.json({
       status: "SUCCESS",
-      transactionId: txnId,
+      transactionId: clientTxnId,
     });
   } catch (err) {
     console.error("PAY ERROR full:", err);
