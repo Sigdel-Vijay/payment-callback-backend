@@ -22,7 +22,6 @@ admin.initializeApp({
 
 const db = admin.database();
 
-
 // =============================
 // ✅ PAYMENT API
 // =============================
@@ -31,7 +30,9 @@ app.post("/pay", async (req, res) => {
     const { idToken, walletId, mpin, amount, merchantId } = req.body;
 
     if (!idToken || !walletId || !mpin || !amount || !merchantId) {
-      return res.status(400).json({ status: "FAILURE", error: "Missing fields" });
+      return res
+        .status(400)
+        .json({ status: "FAILURE", error: "Missing fields" });
     }
 
     // ✅ Verify Firebase user
@@ -145,13 +146,14 @@ app.post("/pay", async (req, res) => {
       status: "SUCCESS",
       transactionId: txnId,
     });
-
   } catch (err) {
-    console.error("PAY ERROR:", err.message);
+    console.error("PAY ERROR full:", err); // ✅ full error object
+    console.error(err.stack); // ✅ full stack trace
 
     // 🔥 Log failure
     await db.ref(`transactions_failed`).push({
       error: err.message,
+      stack: err.stack, // store stack trace in Firebase
       body: req.body,
       timestamp: Date.now(),
     });
@@ -159,10 +161,10 @@ app.post("/pay", async (req, res) => {
     res.status(500).json({
       status: "FAILURE",
       error: err.message,
+      stack: err.stack, // optionally send stack in response (dev only!)
     });
   }
 });
-
 
 // =============================
 // ✅ START SERVER
