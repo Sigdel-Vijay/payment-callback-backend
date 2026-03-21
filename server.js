@@ -22,7 +22,7 @@ admin.initializeApp({
 const db = admin.database();
 
 // =============================
-// ✅ PAYMENT API (lookup by walletId)
+// ✅ PAYMENT API
 // =============================
 app.post("/pay", async (req, res) => {
   try {
@@ -39,7 +39,7 @@ app.post("/pay", async (req, res) => {
     ) {
       return res.status(400).json({
         status: "FAILURE",
-        error: "Missing fields (clientTxnId required)",
+        error: "Missing fields",
       });
     }
 
@@ -52,27 +52,29 @@ app.post("/pay", async (req, res) => {
       throw new Error("Invalid amount");
     }
 
-    // 🔥 Idempotency check using clientTxnId
+    // =============================
+    // 🔒 IDEMPOTENCY CHECK
+    // =============================
     const globalTxRef = db.ref(`transactions_global/${clientTxnId}`);
     const existingTx = await globalTxRef.get();
 
     if (existingTx.exists()) {
-      // If already exists, return success (no double charge)
-      return res.json({ status: "SUCCESS", transactionId: clientTxnId });
+      return res.json({
+        status: "SUCCESS",
+        transactionId: clientTxnId,
+      });
     }
 
     // =============================
-    // ✅ FETCH USER WALLET BY walletId
+    // 👤 GET USER WALLET
     // =============================
-    const walletsRef = db.ref("wallets");
-    const walletSnap = await walletsRef
+    const walletSnap = await db
+      .ref("wallets")
       .orderByChild("walletId")
       .equalTo(walletId)
       .get();
 
-    if (!walletSnap.exists()) {
-      throw new Error("Wallet not found");
-    }
+    if (!walletSnap.exists()) throw new Error("Wallet not found");
 
     let userData, userKey;
     walletSnap.forEach((snap) => {
@@ -91,27 +93,32 @@ app.post("/pay", async (req, res) => {
     const userRef = db.ref(`wallets/${userKey}`);
 
     // =============================
-    // ✅ CHECK MERCHANT
+    // 🏪 GET MERCHANT
     // =============================
     const merchantRef = db.ref(`merchants/${merchantId}`);
     const merchantSnap = await merchantRef.get();
 
-    if (!merchantSnap.exists()) {
-      throw new Error("Merchant not found");
-    }
+    if (!merchantSnap.exists()) throw new Error("Merchant not found");
+
+    const merchantData = merchantSnap.val();
+    const merchantUid = merchantData.uid;
 
     // =============================
-    // ✅ DEBIT USER
+    // 💸 DEBIT USER
     // =============================
-    await userRef.transaction((data) => {
+    const debitResult = await userRef.transaction((data) => {
       if (!data) return data;
-      if (data.balance < payAmount) return; // abort
+      if (data.balance < payAmount) return;
       data.balance -= payAmount;
       return data;
     });
 
+    if (!debitResult.committed) {
+      throw new Error("Failed to debit user");
+    }
+
     // =============================
-    // ✅ CREDIT MERCHANT
+    // 💰 CREDIT MERCHANT
     // =============================
     try {
       await merchantRef.transaction((data) => {
@@ -120,7 +127,7 @@ app.post("/pay", async (req, res) => {
         return data;
       });
     } catch (err) {
-      // 🔥 rollback user money
+      // 🔥 rollback
       await userRef.transaction((data) => {
         if (!data) return data;
         data.balance += payAmount;
@@ -131,7 +138,7 @@ app.post("/pay", async (req, res) => {
     }
 
     // =============================
-    // ✅ SAVE TRANSACTIONS
+    // 🧾 SAVE TRANSACTION
     // =============================
     const txData = {
       id: clientTxnId,
@@ -149,35 +156,53 @@ app.post("/pay", async (req, res) => {
     await globalTxRef.set(txData);
 
     // =============================
-    // ✅ SEND NOTIFICATIONS
+    // 🔔 SEND NOTIFICATIONS
     // =============================
-    // Merchant notification
+
+    // 🔍 USER TOKEN
+    const userTokenSnap = await db.ref(`fcmTokens/users/${userKey}`).get();
+
+    // 🔍 MERCHANT TOKEN (FIXED PATH)
     const merchantTokenSnap = await db
-      .ref(`fcmTokens/merchants/${merchantId}`)
+      .ref(`fcmTokens/merchants/${merchantUid}`)
       .get();
-    if (merchantTokenSnap.exists()) {
-      const token = merchantTokenSnap.val();
-      await admin.messaging().send({
-        token,
-        notification: {
-          title: "Payment Received",
-          body: `You received $${payAmount} from ${userName || "a user"}`,
-        },
-      });
+
+    const notifications = [];
+
+    // 📲 USER NOTIFICATION
+    if (userTokenSnap.exists()) {
+      const userToken = userTokenSnap.val();
+
+      notifications.push(
+        admin.messaging().send({
+          token: userToken,
+          data: {
+            title: "Payment Successful",
+            body: `You have successfully made a payment of Rs.${payAmount} to ${merchantData.businessName} from D-Pay PVT LTD in your dPay wallet.`,
+            type: "payment",
+          },
+        }),
+      );
     }
 
-    // User notification
-    const userTokenSnap = await db.ref(`fcmTokens/users/${userKey}`).get();
-    if (userTokenSnap.exists()) {
-      const token = userTokenSnap.val();
-      await admin.messaging().send({
-        token,
-        notification: {
-          title: "Payment Successful",
-          body: `You paid $${payAmount} to ${merchantSnap.val().businessName}`,
-        },
-      });
+    // 🏪 MERCHANT NOTIFICATION
+    if (merchantTokenSnap.exists()) {
+      const merchantToken = merchantTokenSnap.val();
+
+      notifications.push(
+        admin.messaging().send({
+          token: merchantToken,
+          data: {
+            title: "Payment Received",
+            body: `You have received NPR ${payAmount} from D-PAY PVT LTD in your merchant account.`,
+            type: "payment",
+          },
+        }),
+      );
     }
+
+    // 🔥 Send both in parallel
+    await Promise.all(notifications);
 
     // =============================
     // ✅ RESPONSE
@@ -187,8 +212,7 @@ app.post("/pay", async (req, res) => {
       transactionId: clientTxnId,
     });
   } catch (err) {
-    console.error("PAY ERROR full:", err);
-    console.error(err.stack);
+    console.error("❌ PAY ERROR:", err);
 
     await db.ref(`transactions_failed`).push({
       error: err.message,
@@ -206,7 +230,7 @@ app.post("/pay", async (req, res) => {
 });
 
 // =============================
-// ✅ START SERVER
+// 🚀 START SERVER
 // =============================
 app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
