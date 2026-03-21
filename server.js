@@ -26,12 +26,21 @@ const db = admin.database();
 // =============================
 app.post("/pay", async (req, res) => {
   try {
-    const { idToken, walletId, mpin, amount, merchantId, clientTxnId } = req.body;
+    const { idToken, walletId, mpin, amount, merchantId, clientTxnId } =
+      req.body;
 
-    if (!idToken || !walletId || !mpin || !amount || !merchantId || !clientTxnId) {
-      return res
-        .status(400)
-        .json({ status: "FAILURE", error: "Missing fields (clientTxnId required)" });
+    if (
+      !idToken ||
+      !walletId ||
+      !mpin ||
+      !amount ||
+      !merchantId ||
+      !clientTxnId
+    ) {
+      return res.status(400).json({
+        status: "FAILURE",
+        error: "Missing fields (clientTxnId required)",
+      });
     }
 
     // ✅ Verify Firebase user
@@ -56,7 +65,10 @@ app.post("/pay", async (req, res) => {
     // ✅ FETCH USER WALLET BY walletId
     // =============================
     const walletsRef = db.ref("wallets");
-    const walletSnap = await walletsRef.orderByChild("walletId").equalTo(walletId).get();
+    const walletSnap = await walletsRef
+      .orderByChild("walletId")
+      .equalTo(walletId)
+      .get();
 
     if (!walletSnap.exists()) {
       throw new Error("Wallet not found");
@@ -131,8 +143,41 @@ app.post("/pay", async (req, res) => {
     };
 
     await db.ref(`transactions/users/${userKey}/${clientTxnId}`).set(txData);
-    await db.ref(`transactions/merchants/${merchantId}/${clientTxnId}`).set(txData);
+    await db
+      .ref(`transactions/merchants/${merchantId}/${clientTxnId}`)
+      .set(txData);
     await globalTxRef.set(txData);
+
+    // =============================
+    // ✅ SEND NOTIFICATIONS
+    // =============================
+    // Merchant notification
+    const merchantTokenSnap = await db
+      .ref(`fcmTokens/merchants/${merchantId}`)
+      .get();
+    if (merchantTokenSnap.exists()) {
+      const token = merchantTokenSnap.val();
+      await admin.messaging().send({
+        token,
+        notification: {
+          title: "Payment Received",
+          body: `You received $${payAmount} from ${userName || "a user"}`,
+        },
+      });
+    }
+
+    // User notification
+    const userTokenSnap = await db.ref(`fcmTokens/users/${userKey}`).get();
+    if (userTokenSnap.exists()) {
+      const token = userTokenSnap.val();
+      await admin.messaging().send({
+        token,
+        notification: {
+          title: "Payment Successful",
+          body: `You paid $${payAmount} to ${merchantSnap.val().businessName}`,
+        },
+      });
+    }
 
     // =============================
     // ✅ RESPONSE
