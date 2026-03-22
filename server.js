@@ -178,8 +178,13 @@ app.post("/pay", async (req, res) => {
           token: userToken,
           data: {
             title: "Payment Successful",
-            body: `You have successfully made a payment of Rs.${payAmount} to ${merchantData.businessName} from D-Pay PVT LTD in your dPay wallet.`,
+            body: `Your payment of NPR ${payAmount.toFixed(2)} to ${merchantData.businessName} was completed successfully. The amount has been securely deducted from your wallet.`,
             type: "payment",
+            amount: payAmount.toString(),
+            senderName: userData.name || "You",
+            receiverName: merchantData.businessName,
+            transactionType: "sent",
+            transactionId: clientTxnId,
           },
         }),
       );
@@ -194,8 +199,13 @@ app.post("/pay", async (req, res) => {
           token: merchantToken,
           data: {
             title: "Payment Received",
-            body: `You have received NPR ${payAmount} from D-PAY PVT LTD in your merchant account.`,
+            body: `You have successfully received NPR ${payAmount.toFixed(2)} from ${userData.name}. The amount has been credited to your account.`,
             type: "payment",
+            amount: payAmount.toString(),
+            senderName: userData.name,
+            receiverName: merchantData.businessName || "You",
+            transactionType: "received",
+            transactionId: clientTxnId,
           },
         }),
       );
