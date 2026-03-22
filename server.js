@@ -22,6 +22,17 @@ admin.initializeApp({
 const db = admin.database();
 
 // =============================
+// ✅ HELPER: SANITIZE DATA FOR FCM
+// =============================
+const toStringData = (obj) => {
+  const result = {};
+  for (const key in obj) {
+    result[key] = String(obj[key] ?? "");
+  }
+  return result;
+};
+
+// =============================
 // ✅ PAYMENT API
 // =============================
 app.post("/pay", async (req, res) => {
@@ -159,60 +170,56 @@ app.post("/pay", async (req, res) => {
     // 🔔 SEND NOTIFICATIONS
     // =============================
 
-    // 🔍 USER TOKEN
-    const userTokenSnap = await db.ref(`fcmTokens/users/${userKey}`).get();
+    const sendNotifications = async () => {
+      const userTokenSnap = await db.ref(`fcmTokens/users/${userKey}`).get();
+      const merchantTokenSnap = await db.ref(`fcmTokens/merchants/${merchantUid}`).get();
 
-    // 🔍 MERCHANT TOKEN (FIXED PATH)
-    const merchantTokenSnap = await db
-      .ref(`fcmTokens/merchants/${merchantUid}`)
-      .get();
+      const notifications = [];
 
-    const notifications = [];
+      if (userTokenSnap.exists()) {
+        notifications.push(
+          admin.messaging().send({
+            token: userTokenSnap.val(),
+            data: toStringData({
+              title: "Payment Successful",
+              body: `Your payment of NPR ${payAmount.toFixed(
+                2
+              )} to ${merchantData.businessName} was completed successfully. The amount has been securely deducted from your wallet.`,
+              type: "payment",
+              amount: payAmount.toFixed(2),
+              senderName: userData.name || "You",
+              receiverName: merchantData.businessName || "Merchant",
+              transactionType: "sent",
+              transactionId: clientTxnId,
+            }),
+          })
+        );
+      }
 
-    // 📲 USER NOTIFICATION
-    if (userTokenSnap.exists()) {
-      const userToken = userTokenSnap.val();
+      if (merchantTokenSnap.exists()) {
+        notifications.push(
+          admin.messaging().send({
+            token: merchantTokenSnap.val(),
+            data: toStringData({
+              title: "Payment Received",
+              body: `You have successfully received NPR ${payAmount.toFixed(
+                2
+              )} from ${userData.name}. The amount has been credited to your account.`,
+              type: "payment",
+              amount: payAmount.toFixed(2),
+              senderName: userData.name || "Customer",
+              receiverName: merchantData.businessName || "You",
+              transactionType: "received",
+              transactionId: clientTxnId,
+            }),
+          })
+        );
+      }
 
-      notifications.push(
-        admin.messaging().send({
-          token: userToken,
-          data: {
-            title: "Payment Successful",
-            body: `Your payment of NPR ${payAmount.toFixed(2)} to ${merchantData.businessName} was completed successfully. The amount has been securely deducted from your wallet.`,
-            type: "payment",
-            amount: payAmount.toString(),
-            senderName: userData.name || "You",
-            receiverName: merchantData.businessName,
-            transactionType: "sent",
-            transactionId: clientTxnId,
-          },
-        }),
-      );
-    }
+      await Promise.all(notifications);
+    };
 
-    // 🏪 MERCHANT NOTIFICATION
-    if (merchantTokenSnap.exists()) {
-      const merchantToken = merchantTokenSnap.val();
-
-      notifications.push(
-        admin.messaging().send({
-          token: merchantToken,
-          data: {
-            title: "Payment Received",
-            body: `You have successfully received NPR ${payAmount.toFixed(2)} from ${userData.name}. The amount has been credited to your account.`,
-            type: "payment",
-            amount: payAmount.toString(),
-            senderName: userData.name,
-            receiverName: merchantData.businessName || "You",
-            transactionType: "received",
-            transactionId: clientTxnId,
-          },
-        }),
-      );
-    }
-
-    // 🔥 Send both in parallel
-    await Promise.all(notifications);
+    await sendNotifications();
 
     // =============================
     // ✅ RESPONSE
