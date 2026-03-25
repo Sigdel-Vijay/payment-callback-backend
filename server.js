@@ -172,7 +172,9 @@ app.post("/pay", async (req, res) => {
 
     const sendNotifications = async () => {
       const userTokenSnap = await db.ref(`fcmTokens/users/${userKey}`).get();
-      const merchantTokenSnap = await db.ref(`fcmTokens/merchants/${merchantUid}`).get();
+      const merchantTokenSnap = await db
+        .ref(`fcmTokens/merchants/${merchantUid}`)
+        .get();
 
       const notifications = [];
 
@@ -183,7 +185,7 @@ app.post("/pay", async (req, res) => {
             data: toStringData({
               title: "Payment Successful",
               body: `Your payment of NPR ${payAmount.toFixed(
-                2
+                2,
               )} to ${merchantData.businessName} was completed successfully. The amount has been securely deducted from your wallet.`,
               type: "payment",
               amount: payAmount.toFixed(2),
@@ -192,7 +194,7 @@ app.post("/pay", async (req, res) => {
               transactionType: "sent",
               transactionId: clientTxnId,
             }),
-          })
+          }),
         );
       }
 
@@ -200,10 +202,14 @@ app.post("/pay", async (req, res) => {
         notifications.push(
           admin.messaging().send({
             token: merchantTokenSnap.val(),
+            notification: {
+              title: "Payment Received",
+              body: `You received NPR ${payAmount.toFixed(2)}`,
+            },
             data: toStringData({
               title: "Payment Received",
               body: `You have successfully received NPR ${payAmount.toFixed(
-                2
+                2,
               )} from ${userData.name}. The amount has been credited to your account.`,
               type: "payment",
               amount: payAmount.toFixed(2),
@@ -212,7 +218,7 @@ app.post("/pay", async (req, res) => {
               transactionType: "received",
               transactionId: clientTxnId,
             }),
-          })
+          }),
         );
       }
 
