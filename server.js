@@ -36,10 +36,16 @@ const toStringData = (obj) => {
 // ✅ PAYMENT API
 // =============================
 app.post("/pay", async (req, res) => {
-  const { idToken, walletId, mpin, amount, merchantId, clientTxnId } =
-    req.body;
+  const { idToken, walletId, mpin, amount, merchantId, clientTxnId } = req.body;
 
-  if (!idToken || !walletId || !mpin || !amount || !merchantId || !clientTxnId) {
+  if (
+    !idToken ||
+    !walletId ||
+    !mpin ||
+    !amount ||
+    !merchantId ||
+    !clientTxnId
+  ) {
     return res.status(400).json({
       status: "FAILURE",
       error: "Missing fields",
@@ -121,7 +127,12 @@ app.post("/pay", async (req, res) => {
     // 💸 DEBIT USER
     // =============================
     const debitResult = await userRef.transaction((data) => {
-      if (!data || data.balance < payAmount) return;
+      if (!data) return data; // keep unchanged
+
+      if (data.balance < payAmount) {
+        return data; // DO NOT return undefined
+      }
+
       data.balance -= payAmount;
       return data;
     });
@@ -195,7 +206,7 @@ app.post("/pay", async (req, res) => {
               type: "payment",
               transactionId: clientTxnId,
             }),
-          })
+          }),
         );
       }
 
@@ -209,7 +220,7 @@ app.post("/pay", async (req, res) => {
               type: "payment",
               transactionId: clientTxnId,
             }),
-          })
+          }),
         );
       }
 
