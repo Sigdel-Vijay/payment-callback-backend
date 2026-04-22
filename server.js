@@ -33,71 +33,13 @@ const toStringData = (obj) => {
 };
 
 // =============================
-// 🔔 SEND NOTIFICATIONS (SAFE)
-// =============================
-const sendNotifications = async ({
-  userKey,
-  merchantUid,
-  userData,
-  merchantData,
-  payAmount,
-  clientTxnId,
-}) => {
-  const userTokenSnap = await db.ref(`fcmTokens/users/${userKey}`).get();
-  const merchantTokenSnap = await db
-    .ref(`fcmTokens/merchants/${merchantUid}`)
-    .get();
-
-  const promises = [];
-
-  // ✅ ONLY DATA PAYLOAD (prevents duplicate notifications)
-  if (userTokenSnap.exists()) {
-    promises.push(
-      admin.messaging().send({
-        token: userTokenSnap.val(),
-        data: toStringData({
-          title: "Payment Successful",
-          body: `Paid NPR ${payAmount.toFixed(2)} to ${merchantData.businessName}`,
-          type: "payment",
-          transactionType: "sent",
-          transactionId: clientTxnId,
-        }),
-      }),
-    );
-  }
-
-  if (merchantTokenSnap.exists()) {
-    promises.push(
-      admin.messaging().send({
-        token: merchantTokenSnap.val(),
-        data: toStringData({
-          title: "Payment Received",
-          body: `Received NPR ${payAmount.toFixed(2)} from ${userData.name}`,
-          type: "payment",
-          transactionType: "received",
-          transactionId: clientTxnId,
-        }),
-      }),
-    );
-  }
-
-  await Promise.all(promises);
-};
-
-// =============================
 // ✅ PAYMENT API
 // =============================
 app.post("/pay", async (req, res) => {
-  const { idToken, walletId, mpin, amount, merchantId, clientTxnId } = req.body;
+  const { idToken, walletId, mpin, amount, merchantId, clientTxnId } =
+    req.body;
 
-  if (
-    !idToken ||
-    !walletId ||
-    !mpin ||
-    !amount ||
-    !merchantId ||
-    !clientTxnId
-  ) {
+  if (!idToken || !walletId || !mpin || !amount || !merchantId || !clientTxnId) {
     return res.status(400).json({
       status: "FAILURE",
       error: "Missing fields",
@@ -108,18 +50,17 @@ app.post("/pay", async (req, res) => {
 
   try {
     // =============================
-    // 🔒 IDEMPOTENCY LOCK (CRITICAL)
+    // 🔒 IDEMPOTENCY LOCK
     // =============================
-    const lock = await globalTxRef.transaction((current) => {
-      if (current) return; // already processed
+    const lockResult = await globalTxRef.transaction((current) => {
+      if (current) return; // already exists
       return {
         status: "PROCESSING",
         createdAt: Date.now(),
       };
     });
 
-    // 👉 If already processed
-    if (!lock.committed) {
+    if (!lockResult.committed) {
       const existing = (await globalTxRef.get()).val();
 
       return res.json({
@@ -132,8 +73,8 @@ app.post("/pay", async (req, res) => {
     // ✅ VERIFY USER
     // =============================
     const decoded = await admin.auth().verifyIdToken(idToken);
-    const payAmount = parseFloat(amount);
 
+    const payAmount = parseFloat(amount);
     if (isNaN(payAmount) || payAmount <= 0) {
       throw new Error("Invalid amount");
     }
@@ -179,14 +120,14 @@ app.post("/pay", async (req, res) => {
     // =============================
     // 💸 DEBIT USER
     // =============================
-    const debit = await userRef.transaction((data) => {
+    const debitResult = await userRef.transaction((data) => {
       if (!data || data.balance < payAmount) return;
       data.balance -= payAmount;
       return data;
     });
 
-    if (!debit.committed) {
-      throw new Error("Debit failed");
+    if (!debitResult.committed) {
+      throw new Error("Failed to debit user");
     }
 
     // =============================
@@ -199,7 +140,7 @@ app.post("/pay", async (req, res) => {
         return data;
       });
     } catch (err) {
-      // 🔥 rollback
+      // rollback
       await userRef.transaction((data) => {
         if (!data) return data;
         data.balance += payAmount;
@@ -227,23 +168,52 @@ app.post("/pay", async (req, res) => {
       .ref(`transactions/merchants/${merchantId}/${clientTxnId}`)
       .set(txData);
 
+    // ⚠️ IMPORTANT: use update, NOT set
     await globalTxRef.update(txData);
 
     // =============================
-    // 🔔 SEND NOTIFICATION ONCE
+    // 🔔 SAFE NOTIFICATION
     // =============================
     const txSnap = await globalTxRef.get();
     const tx = txSnap.val();
 
     if (!tx.notificationSent) {
-      await sendNotifications({
-        userKey,
-        merchantUid,
-        userData,
-        merchantData,
-        payAmount,
-        clientTxnId,
-      });
+      const userTokenSnap = await db.ref(`fcmTokens/users/${userKey}`).get();
+      const merchantTokenSnap = await db
+        .ref(`fcmTokens/merchants/${merchantUid}`)
+        .get();
+
+      const notifications = [];
+
+      if (userTokenSnap.exists()) {
+        notifications.push(
+          admin.messaging().send({
+            token: userTokenSnap.val(),
+            data: toStringData({
+              title: "Payment Successful",
+              body: `Paid NPR ${payAmount.toFixed(2)} to ${merchantData.businessName}`,
+              type: "payment",
+              transactionId: clientTxnId,
+            }),
+          })
+        );
+      }
+
+      if (merchantTokenSnap.exists()) {
+        notifications.push(
+          admin.messaging().send({
+            token: merchantTokenSnap.val(),
+            data: toStringData({
+              title: "Payment Received",
+              body: `Received NPR ${payAmount.toFixed(2)} from ${userData.name}`,
+              type: "payment",
+              transactionId: clientTxnId,
+            }),
+          })
+        );
+      }
+
+      await Promise.all(notifications);
 
       await globalTxRef.update({
         notificationSent: true,
@@ -253,7 +223,7 @@ app.post("/pay", async (req, res) => {
     // =============================
     // ✅ RESPONSE
     // =============================
-    return res.json({
+    res.json({
       status: "SUCCESS",
       transactionId: clientTxnId,
     });
@@ -265,13 +235,13 @@ app.post("/pay", async (req, res) => {
       error: err.message,
     });
 
-    await db.ref("transactions_failed").push({
+    await db.ref(`transactions_failed`).push({
       error: err.message,
       body: req.body,
       timestamp: Date.now(),
     });
 
-    return res.status(500).json({
+    res.status(500).json({
       status: "FAILURE",
       error: err.message,
     });
