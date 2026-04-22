@@ -33,47 +33,109 @@ const toStringData = (obj) => {
 };
 
 // =============================
+// 🔔 SEND NOTIFICATIONS (SAFE)
+// =============================
+const sendNotifications = async ({
+  userKey,
+  merchantUid,
+  userData,
+  merchantData,
+  payAmount,
+  clientTxnId,
+}) => {
+  const userTokenSnap = await db.ref(`fcmTokens/users/${userKey}`).get();
+  const merchantTokenSnap = await db
+    .ref(`fcmTokens/merchants/${merchantUid}`)
+    .get();
+
+  const promises = [];
+
+  // ✅ ONLY DATA PAYLOAD (prevents duplicate notifications)
+  if (userTokenSnap.exists()) {
+    promises.push(
+      admin.messaging().send({
+        token: userTokenSnap.val(),
+        data: toStringData({
+          title: "Payment Successful",
+          body: `Paid NPR ${payAmount.toFixed(2)} to ${merchantData.businessName}`,
+          type: "payment",
+          transactionType: "sent",
+          transactionId: clientTxnId,
+        }),
+      }),
+    );
+  }
+
+  if (merchantTokenSnap.exists()) {
+    promises.push(
+      admin.messaging().send({
+        token: merchantTokenSnap.val(),
+        data: toStringData({
+          title: "Payment Received",
+          body: `Received NPR ${payAmount.toFixed(2)} from ${userData.name}`,
+          type: "payment",
+          transactionType: "received",
+          transactionId: clientTxnId,
+        }),
+      }),
+    );
+  }
+
+  await Promise.all(promises);
+};
+
+// =============================
 // ✅ PAYMENT API
 // =============================
 app.post("/pay", async (req, res) => {
+  const { idToken, walletId, mpin, amount, merchantId, clientTxnId } = req.body;
+
+  if (
+    !idToken ||
+    !walletId ||
+    !mpin ||
+    !amount ||
+    !merchantId ||
+    !clientTxnId
+  ) {
+    return res.status(400).json({
+      status: "FAILURE",
+      error: "Missing fields",
+    });
+  }
+
+  const globalTxRef = db.ref(`transactions_global/${clientTxnId}`);
+
   try {
-    const { idToken, walletId, mpin, amount, merchantId, clientTxnId } =
-      req.body;
-
-    if (
-      !idToken ||
-      !walletId ||
-      !mpin ||
-      !amount ||
-      !merchantId ||
-      !clientTxnId
-    ) {
-      return res.status(400).json({
-        status: "FAILURE",
-        error: "Missing fields",
-      });
-    }
-
-    // ✅ Verify Firebase user
-    const decoded = await admin.auth().verifyIdToken(idToken);
-    const uid = decoded.uid;
-
-    const payAmount = parseFloat(amount);
-    if (isNaN(payAmount) || payAmount <= 0) {
-      throw new Error("Invalid amount");
-    }
-
     // =============================
-    // 🔒 IDEMPOTENCY CHECK
+    // 🔒 IDEMPOTENCY LOCK (CRITICAL)
     // =============================
-    const globalTxRef = db.ref(`transactions_global/${clientTxnId}`);
-    const existingTx = await globalTxRef.get();
+    const lock = await globalTxRef.transaction((current) => {
+      if (current) return; // already processed
+      return {
+        status: "PROCESSING",
+        createdAt: Date.now(),
+      };
+    });
 
-    if (existingTx.exists()) {
+    // 👉 If already processed
+    if (!lock.committed) {
+      const existing = (await globalTxRef.get()).val();
+
       return res.json({
-        status: "SUCCESS",
+        status: existing?.status || "SUCCESS",
         transactionId: clientTxnId,
       });
+    }
+
+    // =============================
+    // ✅ VERIFY USER
+    // =============================
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    const payAmount = parseFloat(amount);
+
+    if (isNaN(payAmount) || payAmount <= 0) {
+      throw new Error("Invalid amount");
     }
 
     // =============================
@@ -117,15 +179,14 @@ app.post("/pay", async (req, res) => {
     // =============================
     // 💸 DEBIT USER
     // =============================
-    const debitResult = await userRef.transaction((data) => {
-      if (!data) return data;
-      if (data.balance < payAmount) return;
+    const debit = await userRef.transaction((data) => {
+      if (!data || data.balance < payAmount) return;
       data.balance -= payAmount;
       return data;
     });
 
-    if (!debitResult.committed) {
-      throw new Error("Failed to debit user");
+    if (!debit.committed) {
+      throw new Error("Debit failed");
     }
 
     // =============================
@@ -145,7 +206,7 @@ app.post("/pay", async (req, res) => {
         return data;
       });
 
-      throw new Error("Merchant credit failed, refunded user");
+      throw new Error("Merchant credit failed");
     }
 
     // =============================
@@ -158,96 +219,61 @@ app.post("/pay", async (req, res) => {
       merchantId,
       userId: userKey,
       createdAt: Date.now(),
+      notificationSent: false,
     };
 
     await db.ref(`transactions/users/${userKey}/${clientTxnId}`).set(txData);
     await db
       .ref(`transactions/merchants/${merchantId}/${clientTxnId}`)
       .set(txData);
-    await globalTxRef.set(txData);
+
+    await globalTxRef.update(txData);
 
     // =============================
-    // 🔔 SEND NOTIFICATIONS
+    // 🔔 SEND NOTIFICATION ONCE
     // =============================
+    const txSnap = await globalTxRef.get();
+    const tx = txSnap.val();
 
-    const sendNotifications = async () => {
-      const userTokenSnap = await db.ref(`fcmTokens/users/${userKey}`).get();
-      const merchantTokenSnap = await db
-        .ref(`fcmTokens/merchants/${merchantUid}`)
-        .get();
+    if (!tx.notificationSent) {
+      await sendNotifications({
+        userKey,
+        merchantUid,
+        userData,
+        merchantData,
+        payAmount,
+        clientTxnId,
+      });
 
-      const notifications = [];
-
-      if (userTokenSnap.exists()) {
-        notifications.push(
-          admin.messaging().send({
-            token: userTokenSnap.val(),
-            data: toStringData({
-              title: "Payment Successful",
-              body: `Your payment of NPR ${payAmount.toFixed(
-                2,
-              )} to ${merchantData.businessName} was completed successfully. The amount has been securely deducted from your wallet.`,
-              type: "payment",
-              amount: payAmount.toFixed(2),
-              senderName: userData.name || "You",
-              receiverName: merchantData.businessName || "Merchant",
-              transactionType: "sent",
-              transactionId: clientTxnId,
-            }),
-          }),
-        );
-      }
-
-      if (merchantTokenSnap.exists()) {
-        notifications.push(
-          admin.messaging().send({
-            token: merchantTokenSnap.val(),
-            notification: {
-              title: "Payment Received",
-              body: `You received NPR ${payAmount.toFixed(2)}`,
-            },
-            data: toStringData({
-              title: "Payment Received",
-              body: `You have successfully received NPR ${payAmount.toFixed(
-                2,
-              )} from ${userData.name}. The amount has been credited to your account.`,
-              type: "payment",
-              amount: payAmount.toFixed(2),
-              senderName: userData.name || "Customer",
-              receiverName: merchantData.businessName || "You",
-              transactionType: "received",
-              transactionId: clientTxnId,
-            }),
-          }),
-        );
-      }
-
-      await Promise.all(notifications);
-    };
-
-    await sendNotifications();
+      await globalTxRef.update({
+        notificationSent: true,
+      });
+    }
 
     // =============================
     // ✅ RESPONSE
     // =============================
-    res.json({
+    return res.json({
       status: "SUCCESS",
       transactionId: clientTxnId,
     });
   } catch (err) {
     console.error("❌ PAY ERROR:", err);
 
-    await db.ref(`transactions_failed`).push({
+    await globalTxRef.update({
+      status: "FAILED",
       error: err.message,
-      stack: err.stack,
+    });
+
+    await db.ref("transactions_failed").push({
+      error: err.message,
       body: req.body,
       timestamp: Date.now(),
     });
 
-    res.status(500).json({
+    return res.status(500).json({
       status: "FAILURE",
       error: err.message,
-      stack: err.stack,
     });
   }
 });
