@@ -138,7 +138,13 @@ app.post("/pay", async (req, res) => {
     });
 
     if (!debitResult.committed) {
-      throw new Error("Failed to debit user");
+      const latest = debitResult.snapshot.val();
+
+      if (!latest || latest.balance < payAmount) {
+        throw new Error("Insufficient balance (race condition)");
+      }
+
+      throw new Error("Transaction conflict, retry");
     }
 
     // =============================
