@@ -195,17 +195,33 @@ app.post("/pay", async (req, res) => {
     const tx = txSnap.val();
 
     if (!tx.notificationSent) {
-      const userTokenSnap = await db.ref(`fcmTokens/users/${userKey}`).get();
-      const merchantTokenSnap = await db
+      const userTokensSnap = await db.ref(`fcmTokens/users/${userKey}`).get();
+      const merchantTokensSnap = await db
         .ref(`fcmTokens/merchants/${merchantUid}`)
         .get();
 
-      const notifications = [];
+      let merchantTokens = [];
 
-      if (userTokenSnap.exists()) {
-        notifications.push(
-          admin.messaging().send({
-            token: userTokenSnap.val(),
+      let userTokens = [];
+
+      if (merchantTokensSnap.exists()) {
+        const tokensObj = merchantTokensSnap.val();
+        merchantTokens = Object.keys(tokensObj);
+      }
+
+      const tasks = [];
+
+      if (userTokensSnap.exists()) {
+        const tokensObj = userTokensSnap.val();
+        userTokens = Object.keys(tokensObj);
+      }
+
+      if (userTokens.length > 0) {
+        tasks.push({
+          type: "user",
+          tokens: userTokens,
+          promise: admin.messaging().sendEachForMulticast({
+            tokens: userTokens,
             data: toStringData({
               title: "Payment Successful",
               body: `Paid NPR ${payAmount.toFixed(2)} to ${merchantData.businessName}`,
@@ -213,28 +229,55 @@ app.post("/pay", async (req, res) => {
               transactionId: clientTxnId,
             }),
           }),
-        );
+        });
       }
 
-      if (merchantTokenSnap.exists()) {
-        notifications.push(
-          admin.messaging().send({
-            token: merchantTokenSnap.val(),
+      if (merchantTokens.length > 0) {
+        tasks.push({
+          type: "merchant",
+          tokens: merchantTokens,
+          promise: admin.messaging().sendEachForMulticast({
+            tokens: merchantTokens,
             data: toStringData({
               title: "Payment Received",
-              body: `Received NPR ${payAmount.toFixed(2)} from ${userData.name}`,
+              body: `Received NPR ${payAmount.toFixed(2)} from ${userData.email}`,
               type: "payment",
               transactionId: clientTxnId,
             }),
           }),
-        );
+        });
       }
 
-      await Promise.all(notifications);
+      try {
+        const results = await Promise.all(tasks.map((t) => t.promise));
 
-      await globalTxRef.update({
-        notificationSent: true,
-      });
+        // cleanup
+        results.forEach((res, i) => {
+          const { type, tokens } = tasks[i];
+
+          res.responses.forEach((r, idx) => {
+            if (!r.success) {
+              const badToken = tokens[idx];
+
+              if (type === "user") {
+                db.ref(`fcmTokens/users/${userKey}/${badToken}`).remove();
+              } else {
+                db.ref(
+                  `fcmTokens/merchants/${merchantUid}/${badToken}`,
+                ).remove();
+              }
+            }
+          });
+        });
+
+        await globalTxRef.update({ notificationSent: true });
+      } catch (err) {
+        console.error("Notification failed:", err);
+
+        await globalTxRef.update({
+          notificationError: err.message,
+        });
+      }
     }
 
     // =============================
