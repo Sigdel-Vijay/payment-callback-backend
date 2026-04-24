@@ -142,7 +142,12 @@ app.post("/pay", async (req, res) => {
       throw new Error("Order does not belong to this merchant");
     }
     if (orderData.paymentStatus === "PAID") {
-      const paidTime = new Date(orderData.paidAt).toLocaleString();
+      const paidTime = new Date(orderData.paidAt).toLocaleTimeString("en-US", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+        timeZone: "Asia/Kathmandu",
+      });
 
       throw new Error(`Order ${orderId} already paid at ${paidTime}`);
     }
