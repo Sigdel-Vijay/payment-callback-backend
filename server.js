@@ -36,14 +36,16 @@ const toStringData = (obj) => {
 // ✅ PAYMENT API
 // =============================
 app.post("/pay", async (req, res) => {
-  const { idToken, walletId, mpin, amount, merchantId, clientTxnId } = req.body;
+  const { idToken, walletId, mpin, merchantId, orderId, amount, clientTxnId } =
+    req.body;
 
   if (
     !idToken ||
     !walletId ||
     !mpin ||
-    !amount ||
     !merchantId ||
+    !orderId ||
+    !amount ||
     !clientTxnId
   ) {
     return res.status(400).json({
@@ -124,6 +126,27 @@ app.post("/pay", async (req, res) => {
     const merchantUid = merchantData.uid;
 
     // =============================
+    // 📦 CHECK ORDER EXISTS
+    // =============================
+    const orderRef = db.ref(`orders/${orderId}`);
+    const orderSnap = await orderRef.get();
+
+    if (!orderSnap.exists()) {
+      throw new Error("Order not found");
+    }
+
+    const orderData = orderSnap.val();
+
+    // Optional: extra validation (recommended)
+    if (orderData.merchantId !== merchantId) {
+      throw new Error("Order does not belong to this merchant");
+    }
+
+    if (orderData.status === "DELIVERED") {
+      throw new Error("Order already completed");
+    }
+
+    // =============================
     // 💸 DEBIT USER
     // =============================
     const debitResult = await userRef.transaction((data) => {
@@ -175,6 +198,7 @@ app.post("/pay", async (req, res) => {
       amount: payAmount,
       status: "SUCCESS",
       merchantId,
+      orderId,
       userId: userKey,
       createdAt: Date.now(),
       notificationSent: false,
@@ -187,6 +211,16 @@ app.post("/pay", async (req, res) => {
 
     // ⚠️ IMPORTANT: use update, NOT set
     await globalTxRef.update(txData);
+
+    // =============================
+    // 📦 UPDATE ORDER STATUS
+    // =============================
+    await orderRef.update({
+      paymentStatus: "PAID",
+      paidAmount: payAmount,
+      transactionId: clientTxnId,
+      paidAt: Date.now(),
+    });
 
     // =============================
     // 🔔 SAFE NOTIFICATION
@@ -226,6 +260,7 @@ app.post("/pay", async (req, res) => {
               title: "Payment Successful",
               body: `Paid NPR ${payAmount.toFixed(2)} to ${merchantData.businessName}`,
               type: "payment",
+              orderId: orderId,
               transactionId: clientTxnId,
             }),
           }),
@@ -242,6 +277,7 @@ app.post("/pay", async (req, res) => {
               title: "Payment Received",
               body: `Received NPR ${payAmount.toFixed(2)} from ${userData.email}`,
               type: "payment",
+              orderId: orderId,
               transactionId: clientTxnId,
             }),
           }),
