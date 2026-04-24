@@ -142,12 +142,12 @@ app.post("/pay", async (req, res) => {
       throw new Error("Order does not belong to this merchant");
     }
     if (orderData.paymentStatus === "PAID") {
-      throw new Error(`Order ${orderId} is already paid`);
+      throw new Error(`Order ${orderId} already paid at ${orderData.paidAt}`);
     }
 
     // =============================
     // 💸 DEBIT USER
-    // =============================
+    // =============================F
     const debitResult = await userRef.transaction((data) => {
       if (!data) return data; // keep unchanged
 
