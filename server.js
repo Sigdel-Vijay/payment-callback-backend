@@ -141,9 +141,8 @@ app.post("/pay", async (req, res) => {
     if (orderData.merchantId !== merchantId) {
       throw new Error("Order does not belong to this merchant");
     }
-
-    if (orderData.status === "DELIVERED") {
-      throw new Error("Order already completed");
+    if (orderData.paymentStatus === "PAID") {
+      throw new Error(`Order ${orderId} is already paid`);
     }
 
     // =============================
