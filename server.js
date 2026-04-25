@@ -110,6 +110,8 @@ app.post("/pay", async (req, res) => {
     }
 
     if (userData.uid !== decoded.uid) {
+      console.log("Wallet UID:", userData.uid);
+      console.log("Token UID:", decoded.uid);
       throw new Error("Unauthorized wallet access");
     }
 
