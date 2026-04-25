@@ -103,7 +103,12 @@ app.post("/pay", async (req, res) => {
       userKey = snap.key;
     });
 
-    if (!bcrypt.compareSync(mpin, userData.mpinHash)) {
+    const isMatch = bcrypt.compareSync(mpin, userData.mpinHash);
+
+    console.log(isMatch);
+    console.log(userData.mpinHash);
+
+    if (!isMatch) {
       throw new Error("Invalid MPIN");
     }
 
