@@ -78,9 +78,8 @@ app.post("/pay", async (req, res) => {
     }
 
     // =============================
-    // ✅ VERIFY USER
+    // ✅ CHECK AMOUNT
     // =============================
-    const decoded = await admin.auth().verifyIdToken(idToken);
 
     const payAmount = parseFloat(amount);
     if (isNaN(payAmount) || payAmount <= 0) {
@@ -98,6 +97,8 @@ app.post("/pay", async (req, res) => {
 
     if (!walletSnap.exists()) throw new Error("Wallet not found");
 
+    const decoded = await admin.auth().verifyIdToken(idToken);
+
     let userData, userKey;
     walletSnap.forEach((snap) => {
       userData = snap.val();
@@ -106,6 +107,10 @@ app.post("/pay", async (req, res) => {
 
     if (!bcrypt.compareSync(mpin, userData.mpinHash)) {
       throw new Error("Invalid MPIN");
+    }
+
+    if (userData.uid !== decoded.uid) {
+      throw new Error("Unauthorized wallet access");
     }
 
     if (userData.balance < payAmount) {
