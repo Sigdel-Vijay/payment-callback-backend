@@ -220,8 +220,11 @@ app.post("/pay", async (req, res) => {
     // =============================
     // 📦 UPDATE ORDER STATUS
     // =============================
+    const paymentMethod = "WALLET"; // or "QR", "COD", etc.
+
     await orderRef.update({
       paymentStatus: "PAID",
+      paymentMethod: paymentMethod,
       paidAmount: payAmount,
       transactionId: clientTxnId,
       paidAt: Date.now(),
@@ -233,7 +236,7 @@ app.post("/pay", async (req, res) => {
     const txSnap = await globalTxRef.get();
     const tx = txSnap.val();
 
-    if (!tx.notificationSent) {
+    if (tx.status === "SUCCESS" && !tx.notificationSent) {
       const userTokensSnap = await db.ref(`fcmTokens/users/${userKey}`).get();
       const merchantTokensSnap = await db
         .ref(`fcmTokens/merchants/${merchantUid}`)
@@ -331,10 +334,14 @@ app.post("/pay", async (req, res) => {
   } catch (err) {
     console.error("❌ PAY ERROR:", err);
 
-    await globalTxRef.update({
-      status: "FAILED",
-      error: err.message,
-    });
+    const existingTx = (await globalTxRef.get()).val();
+
+    if (existingTx?.status !== "SUCCESS") {
+      await globalTxRef.update({
+        status: "FAILED",
+        error: err.message,
+      });
+    }
 
     await db.ref(`transactions_failed`).push({
       error: err.message,
