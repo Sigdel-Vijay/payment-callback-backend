@@ -3,6 +3,7 @@ import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import admin from "firebase-admin";
 import bcrypt from "bcryptjs";
+import { type } from "firebase/firestore/pipelines";
 
 dotenv.config();
 
@@ -272,6 +273,10 @@ app.post("/pay", async (req, res) => {
             data: toStringData({
               title: "Payment Successful",
               body: `Paid NPR ${payAmount.toFixed(2)} to ${merchantData.businessName}`,
+              type: "payment",
+              amount: payAmount.toFixed(2),
+              senderName: userData.email,
+              receiverName: merchantData.businessName,
               orderId: orderId,
               transactionType: "sent",
               transactionId: clientTxnId,
@@ -289,6 +294,10 @@ app.post("/pay", async (req, res) => {
             data: toStringData({
               title: "Payment Received",
               body: `Received NPR ${payAmount.toFixed(2)} from ${userData.email}`,
+              type: "payment",
+              amount: payAmount.toFixed(2),
+              senderName: userData.email,
+              receiverName: merchantData.businessName,
               orderId: orderId,
               transactionType: "received",
               transactionId: clientTxnId,
