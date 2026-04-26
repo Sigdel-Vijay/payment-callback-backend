@@ -272,8 +272,8 @@ app.post("/pay", async (req, res) => {
             data: toStringData({
               title: "Payment Successful",
               body: `Paid NPR ${payAmount.toFixed(2)} to ${merchantData.businessName}`,
-              type: "sent",
               orderId: orderId,
+              transactionType: "sent",
               transactionId: clientTxnId,
             }),
           }),
@@ -289,8 +289,8 @@ app.post("/pay", async (req, res) => {
             data: toStringData({
               title: "Payment Received",
               body: `Received NPR ${payAmount.toFixed(2)} from ${userData.email}`,
-              type: "received",
               orderId: orderId,
+              transactionType: "received",
               transactionId: clientTxnId,
             }),
           }),
