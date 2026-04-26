@@ -239,10 +239,24 @@ app.post("/pay", async (req, res) => {
     // =============================
     // 🔔 SAFE NOTIFICATION
     // =============================
-    const txSnap = await globalTxRef.get();
-    const tx = txSnap.val();
 
-    if (tx.status === "SUCCESS" && !tx.notificationSent) {
+    const lockResult = await globalTxRef.transaction((data) => {
+      if (!data) return data;
+
+      if (data.status !== "SUCCESS") return;
+
+      if (data.notificationSent) return;
+
+      data.notificationSent = "SENDING";
+      data.notificationStartedAt = Date.now();
+
+      return data;
+    });
+
+    if (!lockResult.committed) {
+      console.log("Skip notification (already processed or locked)");
+      return;
+    } else {
       const userTokensSnap = await db.ref(`fcmTokens/users/${userKey}`).get();
       const merchantTokensSnap = await db
         .ref(`fcmTokens/merchants/${merchantUid}`)
@@ -333,6 +347,7 @@ app.post("/pay", async (req, res) => {
         console.error("Notification failed:", err);
 
         await globalTxRef.update({
+          notificationSent: false,
           notificationError: err.message,
         });
       }
